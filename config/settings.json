@@ -1,0 +1,36 @@
+{
+  "video": {
+    "width": 1920,
+    "height": 1080,
+    "fps": 25,
+    "image_duration": 5,
+    "intro_duration": 3,
+    "outro_duration": 4,
+    "broll_duration": 2,
+    "min_images_before_generate": 3
+  },
+  "captions": {
+    "enabled": true,
+    "font_size": 52,
+    "font_color": "white",
+    "box_color": "0x000000@0.5",
+    "position": "bottom"
+  },
+  "voiceover": {
+    "default_voice": "sonic-english",
+    "fallback": "edge-tts",
+    "edge_tts_voice": "en-US-GuyNeural"
+  },
+  "script": {
+    "model": "claude-haiku-4-5-20251001",
+    "max_tokens": 300
+  },
+  "image_generation": {
+    "kie_api_endpoint": "https://api.kie.ai/v1/images/generations",
+    "prompt_template": "Professional high-quality photo of {vertical} service in {city}, {state}. Realistic, trustworthy, clean."
+  },
+  "youtube": {
+    "category_id": "19",
+    "year": 2026
+  }
+}

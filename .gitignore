@@ -1,0 +1,21 @@
+# Added by code-review-graph
+.code-review-graph/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# Secrets & credentials
+config/clients/*.json
+config/clients/*_youtube.json
+
+# Output / temp files
+output/
+
+# OS
+.DS_Store
+Thumbs.db
