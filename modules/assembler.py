@@ -1,19 +1,25 @@
 import os
-import sys
 import subprocess
 import tempfile
 
 W, H = 1920, 1080
 FPS = 25
+FFMPEG = "ffmpeg"  # overridden by set_ffmpeg_path()
 
-# Platform font paths for caption overlay
-if sys.platform == "win32":
-    FONT_PATH = "C:/Windows/Fonts/Arial.ttf"
-else:
-    FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+FONT_PATH = (
+    "C:/Windows/Fonts/Arial.ttf"
+    if os.path.exists("C:/Windows/Fonts/Arial.ttf")
+    else "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+)
+
+
+def set_ffmpeg_path(path):
+    global FFMPEG
+    FFMPEG = path
 
 
 def _run(cmd):
+    cmd[0] = FFMPEG
     result = subprocess.run(cmd, capture_output=True)
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg error:\n{result.stderr.decode()}")
@@ -31,31 +37,35 @@ def normalize_clip(src, dst):
 
 def image_to_clip(image_path, dst, duration=5, caption="", motion="zoom_in"):
     """Animate a still image into a video clip with Ken Burns motion and optional caption."""
+    from modules.caption_overlay import add_caption
+
     frames = duration * FPS
     zoom_filter = _motion_filter(motion, frames)
 
-    caption_filter = ""
+    # Burn caption into image via PIL (works on Windows — no fontconfig needed)
+    src = image_path
+    captioned_tmp = None
     if caption:
-        safe = caption.replace("'", "\\'").replace(":", "\\:")
-        caption_filter = (
-            f",drawtext=fontfile='{FONT_PATH}':text='{safe}'"
-            f":fontcolor=white:fontsize=52:box=1:boxcolor=0x000000@0.55:boxborderw=10"
-            f":x=(w-text_w)/2:y=h-text_h-60"
-        )
+        captioned_tmp = dst.replace(".mp4", "_src.jpg")
+        add_caption(image_path, caption, captioned_tmp)
+        src = captioned_tmp
 
     vf = (
         f"scale={W}:{H}:force_original_aspect_ratio=decrease,"
         f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,"
-        f"{zoom_filter}{caption_filter}"
+        f"{zoom_filter}"
     )
     _run([
         "ffmpeg", "-y",
-        "-loop", "1", "-i", image_path,
+        "-loop", "1", "-i", src,
         "-t", str(duration),
         "-vf", vf,
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", str(FPS), "-an",
         dst
     ])
+
+    if captioned_tmp and os.path.exists(captioned_tmp):
+        os.remove(captioned_tmp)
 
 
 def _motion_filter(motion, frames):
@@ -82,16 +92,29 @@ def concat_with_audio(clip_paths, voiceover_path, output_path):
     silent = output_path.replace(".mp4", "_silent.mp4")
     _run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_file, "-c", "copy", silent])
 
+    mixed = output_path.replace(".mp4", "_mixed.mp4")
     _run([
         "ffmpeg", "-y",
         "-i", silent, "-i", voiceover_path,
         "-c:v", "copy", "-c:a", "aac", "-b:a", "128k",
-        "-map", "0:v:0", "-map", "1:a:0", "-shortest",
+        "-map", "0:v:0", "-map", "1:a:0",
+        "-af", "apad", "-shortest",
+        mixed
+    ])
+
+    # Re-encode for maximum compatibility (WhatsApp, email, mobile)
+    _run([
+        "ffmpeg", "-y", "-i", mixed,
+        "-c:v", "libx264", "-profile:v", "baseline", "-level", "3.1",
+        "-pix_fmt", "yuv420p", "-crf", "23",
+        "-c:a", "aac", "-b:a", "128k",
+        "-movflags", "+faststart",
         output_path
     ])
 
     os.unlink(concat_file)
     os.remove(silent)
+    os.remove(mixed)
 
 
 def assemble_video(image_paths, scenes, broll_paths, intro_path, outro_path,

@@ -28,8 +28,10 @@ def generate_script(city, state, vertical, unique_data, brand_name, anthropic_ap
             )
         }]
     )
-    import json
+    import json, re
     raw = message.content[0].text.strip()
+    # Strip markdown code blocks if Claude wrapped the JSON
+    raw = re.sub(r"^```[a-z]*\n?", "", raw).rstrip("`").strip()
     scenes = json.loads(raw)
     voiceover = " ".join([
         scenes["hook"], scenes["problem"], scenes["solution"],

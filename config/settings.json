@@ -1,4 +1,5 @@
 {
+  "ffmpeg_path": "C:/Users/abdta/AppData/Local/Microsoft/WinGet/Packages/Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe/ffmpeg-8.1.1-full_build/bin/ffmpeg.exe",
   "video": {
     "width": 1920,
     "height": 1080,
@@ -32,5 +33,6 @@
   "youtube": {
     "category_id": "19",
     "year": 2026
-  }
+  },
+  "webhook_port": 5000
 }
