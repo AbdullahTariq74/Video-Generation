@@ -1,0 +1,17 @@
+{
+  "client_id": "your_client_id",
+  "notion_api_key": "",
+  "notion_database_id": "",
+  "wordpress_url": "https://yourclient.com",
+  "wordpress_username": "",
+  "wordpress_app_password": "",
+  "youtube_credentials_path": "config/clients/your_client_id_youtube.json",
+  "youtube_channel_id": "",
+  "brand_name": "Your Brand Name",
+  "assets_path": "assets/clients/your_client_id",
+  "cartesia_api_key": "",
+  "cartesia_voice_id": "",
+  "kie_api_key": "",
+  "anthropic_api_key": "",
+  "video_privacy": "public"
+}

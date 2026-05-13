@@ -9,8 +9,9 @@ __pycache__/
 venv/
 env/
 
-# Secrets & credentials
+# Secrets & credentials (template is the exception)
 config/clients/*.json
+!config/clients/client_template.json
 config/clients/*_youtube.json
 
 # Output / temp files
