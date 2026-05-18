@@ -5,7 +5,7 @@ Start: python webhook.py
 POST /webhook/page-published  {"client_id": "winbigmarketing", "notion_page_id": "xxx"}
 GET  /health
 """
-import json
+import os
 import threading
 
 from flask import Flask, request, jsonify
@@ -22,7 +22,10 @@ def _run_pipeline(client_id, notion_page_id):
         cfg = load_config(client_id)
         settings = load_settings()
         set_ffmpeg_path(settings.get("ffmpeg_path", "ffmpeg"))
-        pages = get_page_by_notion_id(cfg["notion_api_key"], notion_page_id)
+        
+        field_map = cfg.get("notion_field_map")
+        pages = get_page_by_notion_id(cfg["notion_api_key"], notion_page_id, field_map=field_map)
+        
         if not pages:
             print(f"[webhook] No page found for {notion_page_id}")
             return
@@ -54,8 +57,6 @@ def health():
 
 
 if __name__ == "__main__":
-    with open("config/settings.json") as f:
-        _settings = json.load(f)
-    port = _settings.get("webhook_port", 5000)
+    port = int(os.environ.get("PORT", 8080))
     print(f"BamBam webhook listening on :{port}")
     app.run(host="0.0.0.0", port=port)

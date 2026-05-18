@@ -4,7 +4,7 @@ import os
 import shutil
 
 from modules.notion_reader import get_pending_pages, get_page_by_notion_id
-from modules.page_scraper import extract_page_images
+from modules.page_scraper import extract_page_images, extract_page_text
 from modules.image_downloader import download_images
 from modules.image_generator import generate_images
 from modules.script_generator import generate_script
@@ -14,30 +14,118 @@ from modules.youtube_uploader import credentials_exist, build_metadata, upload_t
 from modules.schema_injector import generate_video_schema
 from modules.wordpress_updater import inject_video
 from modules.notion_writer import update_page_status
-from modules.service_image import get_or_create_service_image, slugify
-from modules.caption_overlay import add_title_overlay
 
 
 def load_config(client_id):
-    with open(f"config/clients/{client_id}.json") as f:
-        return json.load(f)
+    cfg = {}
+    config_path = f"config/clients/{client_id}.json"
+    if os.path.exists(config_path):
+        with open(config_path) as f:
+            cfg = json.load(f)
+    else:
+        cfg["client_id"] = client_id
+
+    # Railway / production: env vars override anything in the JSON file
+    env_map = {
+        "notion_api_key":      "NOTION_API_KEY",
+        "notion_database_id":  "NOTION_DATABASE_ID",
+        "cartesia_api_key":    "CARTESIA_API_KEY",
+        "anthropic_api_key":   "ANTHROPIC_API_KEY",
+        "openai_api_key":      "OPENAI_API_KEY",
+        "brand_name":          "BRAND_NAME",
+        "broll_vertical":      "BROLL_VERTICAL",
+        "wordpress_url":       "WORDPRESS_URL",
+        "wordpress_username":  "WORDPRESS_USERNAME",
+        "wordpress_app_password": "WORDPRESS_APP_PASSWORD",
+    }
+    for cfg_key, env_key in env_map.items():
+        val = os.environ.get(env_key)
+        if val:
+            cfg[cfg_key] = val
+
+    # Notion field map can come from env as JSON string
+    if not cfg.get("notion_field_map") and os.environ.get("NOTION_FIELD_MAP"):
+        cfg["notion_field_map"] = json.loads(os.environ["NOTION_FIELD_MAP"])
+
+    if not cfg.get("assets_path"):
+        cfg["assets_path"] = f"assets/clients/{client_id}"
+
+    return cfg
 
 
 def load_settings():
     with open("config/settings.json") as f:
-        return json.load(f)
+        settings = json.load(f)
+    # Allow ffmpeg path override via env var (Railway uses system ffmpeg)
+    ffmpeg_env = os.environ.get("FFMPEG_PATH")
+    if ffmpeg_env:
+        settings["ffmpeg_path"] = ffmpeg_env
+    return settings
 
 
-def select_broll(vertical):
+def select_broll(vertical, override=None):
+    broll_base = "assets/broll/by_vertical"
+
+    # 1. Config override (e.g. "auto_transport" for any auto-related service)
+    if override:
+        d = os.path.join(broll_base, override)
+        clips = _mp4s(d)
+        if clips:
+            return clips
+
+    # 2. Exact slug match
     vertical_key = vertical.lower().replace(" ", "_")
-    for broll_dir in [f"assets/broll/by_vertical/{vertical_key}", "assets/broll/generic"]:
-        if os.path.isdir(broll_dir):
-            clips = sorted([
-                os.path.join(broll_dir, f)
-                for f in os.listdir(broll_dir) if f.endswith(".mp4")
-            ])
+    clips = _mp4s(os.path.join(broll_base, vertical_key))
+    if clips:
+        return clips
+
+    # 3. Keyword fallback — find any broll dir whose name shares a word with the vertical
+    if os.path.isdir(broll_base):
+        words = set(vertical_key.split("_"))
+        for dirname in os.listdir(broll_base):
+            if words & set(dirname.split("_")):
+                clips = _mp4s(os.path.join(broll_base, dirname))
+                if clips:
+                    return clips
+
+    # 4. Generic fallback
+    clips = _mp4s("assets/broll/generic")
+    if clips:
+        return clips
+
+    # 5. Any available broll at all
+    if os.path.isdir(broll_base):
+        for dirname in os.listdir(broll_base):
+            clips = _mp4s(os.path.join(broll_base, dirname))
             if clips:
                 return clips
+
+    return []
+
+
+def _mp4s(directory):
+    if not os.path.isdir(directory):
+        return []
+    return sorted([os.path.join(directory, f) for f in os.listdir(directory) if f.endswith(".mp4")])
+
+
+def select_stock_images(vertical, count):
+    vertical_key = vertical.lower().replace(" ", "_")
+    images = []
+    # Check assets/stock_images/by_vertical/[vertical]
+    # It might have subfolders (like Nick's: aerial highways, etc.)
+    base_dir = f"assets/stock_images/by_vertical/{vertical_key}"
+    if os.path.isdir(base_dir):
+        # Walk and find all images
+        for root, _, files in os.walk(base_dir):
+            for f in files:
+                if f.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
+                    images.append(os.path.join(root, f))
+    
+    import random
+    if images:
+        random.shuffle(images)
+        return images[:count]
     return []
 
 
@@ -53,30 +141,54 @@ def process_page(page, cfg, settings, no_upload=False):
 
     print(f"\n{'='*55}\n  {slug}\n{'='*55}")
 
-    try:
-        # 1. Scrape images from WordPress page
-        print("  -> Scraping page images...")
-        image_urls = extract_page_images(page["page_url"], page["hero_image_url"])
-        print(f"  -> Found {len(image_urls)} image(s) on page")
+    # Check for YouTube credentials FIRST if not in no_upload mode
+    creds_path = cfg.get("youtube_credentials_path", "")
+    if not no_upload and not credentials_exist(creds_path):
+        print(f"  -> [SKIP] No YouTube credentials for {cfg['client_id']}. Skipping generation.")
+        return
 
-        # 2. Generate missing images via Kie.ai if below threshold
+    try:
+        # 1. Scrape images + text from page
+        image_urls = []
+        page_text = ""
+        if page.get("page_url"):
+            print("  -> Scraping page content...")
+            image_urls = extract_page_images(page["page_url"], page["hero_image_url"])
+            page_text = extract_page_text(page["page_url"])
+            print(f"  -> Found {len(image_urls)} image(s), {len(page_text.split())} words of content")
+        elif page.get("hero_image_url"):
+            print("  -> No page URL — using Notion image URL directly")
+            image_urls = [page["hero_image_url"]]
+
+        # 2. Generate or use stock images if below threshold
         min_needed = settings["video"]["min_images_before_generate"]
         if len(image_urls) < min_needed:
             needed = min_needed - len(image_urls)
-            print(f"  -> Only {len(image_urls)} image(s) — generating {needed} via Kie.ai...")
-            kie_key = cfg.get("kie_api_key", "")
-            if kie_key:
-                generated = generate_images(
-                    city=page["geo_city"], state=page["geo_state"],
-                    vertical=page["vertical"], count=needed,
-                    output_dir=images_dir,
-                    kie_api_key=kie_key,
-                    kie_endpoint=settings["image_generation"]["kie_api_endpoint"],
-                    prompt_template=settings["image_generation"]["prompt_template"]
-                )
-                image_urls.extend([f"file://{p}" for p in generated])
-            else:
-                print("  -> No Kie.ai key — proceeding with available images")
+            print(f"  -> Only {len(image_urls)} image(s) — getting {needed} more...")
+            
+            # Try local stock first
+            stock = select_stock_images(page["vertical"], needed)
+            if stock:
+                print(f"  -> Found {len(stock)} local stock images")
+                image_urls.extend([f"file://{p}" for p in stock])
+                needed -= len(stock)
+            
+            # Then generate via Kie.ai if still needed
+            if needed > 0:
+                kie_key = cfg.get("kie_api_key", "")
+                if kie_key:
+                    print(f"  -> Generating {needed} via Kie.ai...")
+                    generated = generate_images(
+                        city=page["geo_city"], state=page["geo_state"],
+                        vertical=page["vertical"], count=needed,
+                        output_dir=images_dir,
+                        kie_api_key=kie_key,
+                        kie_endpoint=settings["image_generation"]["kie_api_endpoint"],
+                        prompt_template=settings["image_generation"]["prompt_template"]
+                    )
+                    image_urls.extend([f"file://{p}" for p in generated])
+                else:
+                    print("  -> No Kie.ai key — proceeding with available images")
 
         # 3. Download images
         print("  -> Downloading images...")
@@ -90,46 +202,24 @@ def process_page(page, cfg, settings, no_upload=False):
         if not local_images:
             raise Exception("No images available")
 
-        # 3b. Service image — 1 professional cover per service, cached + reused
-        service_slug = slugify(page["vertical"])
-        service_img_dir = f"assets/services/{cfg['client_id']}/{service_slug}"
-        print("  -> Getting service image...")
-        service_img = get_or_create_service_image(
-            service=page["vertical"],
-            output_dir=service_img_dir,
-            kie_api_key=cfg.get("kie_api_key") or None,
-            kie_endpoint=settings["image_generation"]["kie_api_endpoint"],
-        )
+        all_images = local_images[:4]
 
-        # Build title card: service image + city/state translucent overlay
-        title_card_path = os.path.join(work_dir, "title_card.jpg")
-        add_title_overlay(
-            service_img,
-            page["vertical"],
-            f"{page['geo_city']}, {page['geo_state']}",
-            title_card_path,
-        )
-
-        # Title card is Scene 1; scraped images fill scenes 2-5
-        all_images = [title_card_path] + local_images[:4]
-
-        # 4. Generate script
+        # 4. Generate script (Claude preferred, OpenAI fallback)
         print("  -> Generating script...")
-        anthropic_key = cfg.get("anthropic_api_key", "")
         script_ok = False
-        if anthropic_key:
-            try:
-                scenes, voiceover_text = generate_script(
-                    city=page["geo_city"], state=page["geo_state"],
-                    vertical=page["vertical"],
-                    unique_data=page.get("unique_data", ""),
-                    brand_name=brand_name,
-                    anthropic_api_key=anthropic_key,
-                    model=settings["script"]["model"]
-                )
-                script_ok = True
-            except Exception as script_err:
-                print(f"  -> Script API failed ({script_err}) — using template fallback")
+        try:
+            scenes, voiceover_text = generate_script(
+                city=page["geo_city"], state=page["geo_state"],
+                vertical=page["vertical"],
+                unique_data=page_text or page.get("unique_data", ""),
+                brand_name=brand_name,
+                anthropic_api_key=cfg.get("anthropic_api_key") or None,
+                openai_api_key=cfg.get("openai_api_key") or None,
+                model=settings["script"]["model"]
+            )
+            script_ok = True
+        except Exception as script_err:
+            print(f"  -> Script generation failed ({script_err}) — using template fallback")
         if not script_ok:
             city = page["geo_city"]
             state = page["geo_state"]
@@ -165,13 +255,14 @@ def process_page(page, cfg, settings, no_upload=False):
         assemble_video(
             image_paths=all_images,
             scenes=scenes,
-            broll_paths=select_broll(page["vertical"]),
+            broll_paths=select_broll(page["vertical"], override=cfg.get("broll_vertical")),
             intro_path=intro_path,
             outro_path=outro_path,
             voiceover_path=voiceover_path,
             output_path=final_video,
             work_dir=work_dir,
-            image_duration=settings["video"]["image_duration"]
+            image_duration=settings["video"]["image_duration"],
+            openai_api_key=cfg.get("openai_api_key")
         )
         print(f"  -> Video assembled: {final_video}")
 
@@ -181,13 +272,15 @@ def process_page(page, cfg, settings, no_upload=False):
 
         if no_upload:
             print("  -> Skipping upload (--no-upload)")
-            update_page_status(cfg["notion_api_key"], page["notion_page_id"], status="ready_to_upload")
+            update_page_status(cfg["notion_api_key"], page["notion_page_id"], 
+                               status="ready_to_upload", field_map=cfg.get("notion_field_map"))
             print(f"  [OK] DONE (local): {final_video}")
             return
 
         if not credentials_exist(creds_path):
             print("  -> No YouTube credentials — marking ready_to_upload")
-            update_page_status(cfg["notion_api_key"], page["notion_page_id"], status="ready_to_upload")
+            update_page_status(cfg["notion_api_key"], page["notion_page_id"], 
+                               status="ready_to_upload", field_map=cfg.get("notion_field_map"))
             print(f"  [OK] DONE (local): {final_video}")
             return
 
@@ -220,13 +313,15 @@ def process_page(page, cfg, settings, no_upload=False):
         # 9. Write back to Notion
         print("  -> Updating Notion...")
         update_page_status(cfg["notion_api_key"], page["notion_page_id"],
-                           youtube_video_id=youtube_video_id, status="done")
+                           youtube_video_id=youtube_video_id, status="done",
+                           field_map=cfg.get("notion_field_map"))
         print(f"  [OK] DONE: {slug}")
 
     except Exception as e:
         print(f"  [FAIL] FAILED: {slug} — {e}")
         try:
-            update_page_status(cfg["notion_api_key"], page["notion_page_id"], status="failed")
+            update_page_status(cfg["notion_api_key"], page["notion_page_id"], 
+                               status="failed", field_map=cfg.get("notion_field_map"))
         except Exception:
             pass
 
@@ -250,9 +345,9 @@ if __name__ == "__main__":
     set_ffmpeg_path(settings.get("ffmpeg_path", "ffmpeg"))
 
     if args.notion_id:
-        pages = get_page_by_notion_id(cfg["notion_api_key"], args.notion_id)
+        pages = get_page_by_notion_id(cfg["notion_api_key"], args.notion_id, field_map=cfg.get("notion_field_map"))
     else:
-        pages = get_pending_pages(cfg["notion_api_key"], cfg["notion_database_id"])
+        pages = get_pending_pages(cfg["notion_api_key"], cfg["notion_database_id"], field_map=cfg.get("notion_field_map"))
         if args.slug:
             pages = [p for p in pages if p["page_slug"] == args.slug]
         if args.limit:

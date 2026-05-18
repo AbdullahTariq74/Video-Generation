@@ -17,6 +17,16 @@ config/clients/*_youtube.json
 # Output / temp files
 output/
 
+# Assets — large binary files, stored on R2 in production
+assets/
+
+# Local dev files
+.claude/
+.mcp.json
+tts_test.py
+quick_sample.py
+*.docx
+
 # OS
 .DS_Store
 Thumbs.db
