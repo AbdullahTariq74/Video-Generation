@@ -266,6 +266,16 @@ def process_page(page, cfg, settings, no_upload=False):
         )
         print(f"  -> Video assembled: {final_video}")
 
+        # 6b. Back up to R2
+        r2_video_url = None
+        if os.environ.get("R2_ENDPOINT_URL"):
+            try:
+                from modules.r2_sync import upload_video as r2_upload
+                r2_video_url = r2_upload(final_video)
+                print(f"  -> R2 URL: {r2_video_url}")
+            except Exception as r2_err:
+                print(f"  -> R2 upload failed: {r2_err}")
+
         # 7. Upload to YouTube
         youtube_video_id = None
         creds_path = cfg.get("youtube_credentials_path", "")

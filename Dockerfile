@@ -17,4 +17,4 @@ RUN mkdir -p assets/broll assets/clients config/clients output
 
 EXPOSE 8080
 
-CMD ["python", "webhook.py"]
+CMD ["python", "startup.py"]

@@ -25,6 +25,7 @@ assets/
 .mcp.json
 tts_test.py
 quick_sample.py
+upload_assets_to_r2.py
 *.docx
 
 # OS
