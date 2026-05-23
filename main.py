@@ -141,11 +141,7 @@ def process_page(page, cfg, settings, no_upload=False):
 
     print(f"\n{'='*55}\n  {slug}\n{'='*55}")
 
-    # Check for YouTube credentials FIRST if not in no_upload mode
     creds_path = cfg.get("youtube_credentials_path", "")
-    if not no_upload and not credentials_exist(creds_path):
-        print(f"  -> [SKIP] No YouTube credentials for {cfg['client_id']}. Skipping generation.")
-        return
 
     try:
         # 1. Scrape images + text from page
